@@ -41,7 +41,7 @@ bun run start
 在每个 `[[bots]]` 中设置 `preset_prompt`（支持 TOML 多行字符串和环境变量展开）。网关仅会在创建会话的首轮请求中将其作为 Bot 指令前缀添加，后续追问、Steer 和反问答案不再重复附加；未配置或留空则保持原行为。它是发送给 Agent 的 prompt 内容，不是 SDK 的独立 system role，也不是权限隔离机制。
 
 - **不绑定仓库**：Cloud Bot 可设置 `default_repo = ''`、`allow_no_repo = true`；空字符串会清除继承的全局默认仓库。示例配置默认要求仓库，需要显式修改。
-- **多个候选仓库**：全局和 Bot 的 `repos.aliases` 可配置多个仓库，用消息中的 `repo: <别名>` 选择；当前 Cloud 会话一次只传入一个仓库，不支持同时挂载多个 Cloud 仓库。
+- **多仓库候选与 Cloud 单会话多仓**：全局和 Bot 的 `repos.aliases` 可配置多个仓库；设置 `default_repos = ['backend', 'web-app']`（或在消息中传逗号分隔的 `repos: backend, web-app`）即可在同一个 Cloud 会话中同时挂载多个仓库。
 - **多个本地目录**：Local Bot 使用 `cwd` 作为主目录，`dirs = ['/path/to/another-repo']` 可添加其他目录。目录不必是 Git 仓库，但必须存在且可访问；仍需要 `default_model`。
 
 ### Lark 开放平台配置

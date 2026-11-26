@@ -11,6 +11,7 @@ export {
   resolveBotPolicy,
   resolveLocalWorkspace,
   resolveRepo,
+  resolveRepos,
   validateConfig,
 } from './config.ts'
 export type {
@@ -37,6 +38,7 @@ export {
 export type {
   AgentRuntime,
   AgentSummary,
+  CloudRepoInput,
   CreateAgentInput,
   CreateCloudAgentInput,
   CreatedAgentRun,

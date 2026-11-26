@@ -66,6 +66,8 @@ allowed_users = []
 
 [repos]
 default_repo = ''
+# Optional: attach multiple repositories simultaneously for cloud runtime sessions
+# default_repos = [ 'backend', 'web-app' ]
 allow_unlisted_repos = false
 allow_no_repo = false
 
@@ -89,6 +91,7 @@ app_secret = '${LARK_BACKEND_APP_SECRET}'
 domain = 'feishu' # 'feishu' (China) or 'lark' (International)
 log_level = 'info'
 default_repo = 'backend'
+# default_repos = [ 'backend', 'web-app' ] # attach multiple repositories in a single cloud session
 preset_prompt = '''
 You are the backend development assistant. Prefer focused changes and include regression tests.
 '''

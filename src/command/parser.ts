@@ -145,7 +145,9 @@ function parseCreateBody(body: string, rawText: string): ParsedCommand {
         const key = kv.key.toLowerCase()
         switch (key) {
           case 'repo':
+          case 'repos':
           case 'repository':
+          case 'repositories':
             cmd.repo = kv.val
             matchedHeaders++
             continue

@@ -45,6 +45,7 @@ export interface LarkBotConfig {
   workOnCurrentBranch?: boolean
   skipReviewerRequest?: boolean
   defaultRepo?: string
+  defaultRepos?: string[]
   allowUnlistedRepos?: boolean
   allowNoRepo?: boolean
   allowedUsers?: string[]
@@ -94,6 +95,7 @@ export interface GatewayConfig {
   }
   repos: {
     defaultRepo: string
+    defaultRepos: string[]
     allowUnlistedRepos: boolean
     allowNoRepo: boolean
     aliases: Record<string, RepoConfig>
@@ -147,6 +149,7 @@ const rawBotSchema = z
     work_on_current_branch: z.boolean().optional(),
     skip_reviewer_request: z.boolean().optional(),
     default_repo: z.string().optional(),
+    default_repos: z.array(z.string()).optional(),
     allow_unlisted_repos: z.boolean().optional(),
     allow_no_repo: z.boolean().optional(),
     allowed_users: z.array(z.string()).optional(),
@@ -216,6 +219,7 @@ const rawConfigSchema = z
     repos: z
       .object({
         default_repo: z.string().optional(),
+        default_repos: z.array(z.string()).optional(),
         allow_unlisted_repos: z.boolean().optional(),
         allow_no_repo: z.boolean().optional(),
         aliases: z.record(z.string(), repoAliasSchema).optional(),
@@ -265,6 +269,7 @@ export function createDefaultConfig(): GatewayConfig {
     },
     repos: {
       defaultRepo: '',
+      defaultRepos: [],
       allowUnlistedRepos: true,
       allowNoRepo: true,
       aliases: {},
@@ -412,6 +417,7 @@ function applyConfigFile(cfg: GatewayConfig, t: z.infer<typeof rawConfigSchema>)
       workOnCurrentBranch: b.work_on_current_branch,
       skipReviewerRequest: b.skip_reviewer_request,
       defaultRepo: b.default_repo?.trim(),
+      defaultRepos: b.default_repos ? normalizeRepoKeys(b.default_repos) : undefined,
       allowUnlistedRepos: b.allow_unlisted_repos,
       allowNoRepo: b.allow_no_repo,
       allowedUsers: b.allowed_users,
@@ -470,6 +476,8 @@ function applyConfigFile(cfg: GatewayConfig, t: z.infer<typeof rawConfigSchema>)
   if (t.auth?.allowed_users) cfg.auth.allowedUsers = t.auth.allowed_users
   if (t.repos) {
     if (t.repos.default_repo !== undefined) cfg.repos.defaultRepo = t.repos.default_repo
+    if (t.repos.default_repos !== undefined)
+      cfg.repos.defaultRepos = normalizeRepoKeys(t.repos.default_repos)
     if (t.repos.allow_unlisted_repos !== undefined)
       cfg.repos.allowUnlistedRepos = t.repos.allow_unlisted_repos
     if (t.repos.allow_no_repo !== undefined) cfg.repos.allowNoRepo = t.repos.allow_no_repo
@@ -562,6 +570,9 @@ function applyEnv(cfg: GatewayConfig, env: Record<string, string | undefined>): 
       .filter(Boolean)
   }
   cfg.repos.defaultRepo = str('DEFAULT_REPO') ?? cfg.repos.defaultRepo
+  if (str('DEFAULT_REPOS')) {
+    cfg.repos.defaultRepos = normalizeRepoKeys(str('DEFAULT_REPOS')!.split(','))
+  }
   cfg.repos.allowUnlistedRepos = bool('ALLOW_UNLISTED_REPOS') ?? cfg.repos.allowUnlistedRepos
   cfg.repos.allowNoRepo = bool('ALLOW_NO_REPO') ?? cfg.repos.allowNoRepo
 }
@@ -636,6 +647,7 @@ export interface EffectiveBotPolicy {
   workOnCurrentBranch: boolean
   skipReviewerRequest: boolean
   defaultRepo: string
+  defaultRepos: string[]
   allowUnlistedRepos: boolean
   allowNoRepo: boolean
   allowedUsers: string[]
@@ -648,6 +660,8 @@ export function resolveBotPolicy(cfg: GatewayConfig, bot?: LarkBotConfig): Effec
     ...cfg.mcp.servers,
     ...(bot?.mcpServers ?? {}),
   }
+
+  const defaultRepos = resolveDefaultRepoKeys(cfg, bot)
 
   return {
     requireMention: bot?.requireMention ?? true,
@@ -664,7 +678,8 @@ export function resolveBotPolicy(cfg: GatewayConfig, bot?: LarkBotConfig): Effec
     autoCreatePR: bot?.autoCreatePR ?? cfg.cursor.autoCreatePR,
     workOnCurrentBranch: bot?.workOnCurrentBranch ?? cfg.cursor.workOnCurrentBranch,
     skipReviewerRequest: bot?.skipReviewerRequest ?? cfg.cursor.skipReviewerRequest,
-    defaultRepo: bot?.defaultRepo ?? cfg.repos.defaultRepo,
+    defaultRepo: defaultRepos[0] ?? '',
+    defaultRepos,
     allowUnlistedRepos: bot?.allowUnlistedRepos ?? cfg.repos.allowUnlistedRepos,
     allowNoRepo: bot?.allowNoRepo ?? cfg.repos.allowNoRepo,
     allowedUsers: bot?.allowedUsers ?? cfg.auth.allowedUsers,
@@ -713,29 +728,32 @@ export interface ResolvedRepo {
   defaultBranch: string
 }
 
-export function resolveRepo(
-  cfg: GatewayConfig,
-  input: string,
-  userId: string,
-  bot?: LarkBotConfig,
-): ResolvedRepo {
-  const policy = resolveBotPolicy(cfg, bot)
-  if (!isInListOrEmpty(userId, policy.allowedUsers))
-    throw new Error(`User ${userId} is not allowed to create tasks`)
-
-  const key = input.trim() || policy.defaultRepo.trim()
-  if (!key) {
-    if (policy.allowNoRepo) {
-      return {
-        repoUrl: '',
-        defaultBranch: '',
-      }
-    }
-    throw new Error(
-      'No repository specified. Pass `repo: <alias-or-url>` to select a target repository.',
-    )
+function normalizeRepoKeys(keys: string[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const raw of keys) {
+    const trimmed = raw.trim()
+    if (!trimmed) continue
+    const dedupeKey = trimmed.replace(/\/+$/, '').toLowerCase()
+    if (seen.has(dedupeKey)) continue
+    seen.add(dedupeKey)
+    out.push(trimmed)
   }
+  return out
+}
 
+function resolveDefaultRepoKeys(cfg: GatewayConfig, bot?: LarkBotConfig): string[] {
+  if (bot?.defaultRepos !== undefined) return normalizeRepoKeys(bot.defaultRepos)
+  if (bot?.defaultRepo !== undefined) return normalizeRepoKeys([bot.defaultRepo])
+  if (cfg.repos.defaultRepos.length > 0) return normalizeRepoKeys(cfg.repos.defaultRepos)
+  return normalizeRepoKeys([cfg.repos.defaultRepo])
+}
+
+function resolveSingleRepoKey(
+  policy: EffectiveBotPolicy,
+  key: string,
+  userId: string,
+): ResolvedRepo {
   for (const [alias, rc] of Object.entries(policy.repoAliases)) {
     const sameAlias = alias.toLowerCase() === key.toLowerCase()
     const sameUrl =
@@ -769,6 +787,48 @@ export function resolveRepo(
     repoUrl: key,
     defaultBranch: '',
   }
+}
+
+export function resolveRepos(
+  cfg: GatewayConfig,
+  input: string,
+  userId: string,
+  bot?: LarkBotConfig,
+): ResolvedRepo[] {
+  const policy = resolveBotPolicy(cfg, bot)
+  if (!isInListOrEmpty(userId, policy.allowedUsers))
+    throw new Error(`User ${userId} is not allowed to create tasks`)
+
+  const explicitKeys = input.trim() ? normalizeRepoKeys(input.split(',')) : []
+  const keys = explicitKeys.length > 0 ? explicitKeys : policy.defaultRepos
+
+  if (keys.length === 0) {
+    if (policy.allowNoRepo) return []
+    throw new Error(
+      'No repository specified. Pass `repo: <alias-or-url>` to select a target repository.',
+    )
+  }
+
+  const resolved: ResolvedRepo[] = []
+  const seenUrls = new Set<string>()
+  for (const key of keys) {
+    const item = resolveSingleRepoKey(policy, key, userId)
+    const normalizedUrl = item.repoUrl.replace(/\/+$/, '').toLowerCase()
+    if (seenUrls.has(normalizedUrl)) continue
+    seenUrls.add(normalizedUrl)
+    resolved.push(item)
+  }
+  return resolved
+}
+
+export function resolveRepo(
+  cfg: GatewayConfig,
+  input: string,
+  userId: string,
+  bot?: LarkBotConfig,
+): ResolvedRepo {
+  const resolved = resolveRepos(cfg, input, userId, bot)
+  return resolved[0] ?? { repoUrl: '', defaultBranch: '' }
 }
 
 export interface ResolvedLocalWorkspace {

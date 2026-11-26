@@ -121,13 +121,21 @@ export class CursorSdkClient implements CursorClient {
 
     if (runtime === 'local') return this.createLocalAgentAndRun(input, mcpServers)
 
+    const cloudRepos =
+      input.repos && input.repos.length > 0
+        ? input.repos.map((r) => ({
+            url: r.url,
+            startingRef: r.startingRef || undefined,
+          }))
+        : input.repoUrl
+          ? [{ url: input.repoUrl, startingRef: input.startingRef || undefined }]
+          : []
+
     const cloud: NonNullable<Parameters<typeof Agent.create>[0]['cloud']> = {
-      repos: input.repoUrl
-        ? [{ url: input.repoUrl, startingRef: input.startingRef || undefined }]
-        : [],
+      repos: cloudRepos,
       metadata: input.metadata,
     }
-    if (input.repoUrl) {
+    if (cloudRepos.length > 0) {
       cloud.autoCreatePR = input.autoCreatePR
       cloud.workOnCurrentBranch = input.workOnCurrentBranch
       if (input.autoCreatePR && input.skipReviewerRequest) cloud.skipReviewerRequest = true

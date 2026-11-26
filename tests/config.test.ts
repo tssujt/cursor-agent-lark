@@ -12,6 +12,7 @@ import {
   resolveBotPolicy,
   resolveLocalWorkspace,
   resolveRepo,
+  resolveRepos,
 } from '../src/config.ts'
 
 describe('config', () => {
@@ -421,5 +422,63 @@ app_secret = 'sec_toml'
     )
     expect(withEnvOverrides.cursor.apiKey).toBe('key_from_host_env')
     expect(withEnvOverrides.cursor.defaultMode).toBe('plan')
+  })
+
+  it('resolves multiple default_repos and comma-separated repo inputs for cloud runtime', () => {
+    const cfg = parseConfigFromToml(
+      `
+[cursor]
+api_key = 'k'
+
+[repos]
+default_repos = ['backend', 'shared']
+allow_unlisted_repos = false
+
+[repos.aliases.backend]
+url = 'https://github.com/org/backend'
+default_branch = 'main'
+
+[repos.aliases.web]
+url = 'https://github.com/org/web'
+default_branch = 'develop'
+
+[repos.aliases.shared]
+url = 'https://github.com/org/shared'
+default_branch = 'main'
+
+[[bots]]
+id = 'multi-bot'
+app_id = 'cli_multi'
+app_secret = 'sec_multi'
+default_repos = ['backend', 'web']
+
+[[bots]]
+id = 'inherit-bot'
+app_id = 'cli_inherit'
+app_secret = 'sec_inherit'
+
+[[bots]]
+id = 'no-repo-bot'
+app_id = 'cli_none'
+app_secret = 'sec_none'
+default_repos = []
+allow_no_repo = true
+`,
+      { env: {} },
+    )
+
+    expect(resolveRepos(cfg, '', 'ou_alice', cfg.bots[0])).toEqual([
+      { repoUrl: 'https://github.com/org/backend', defaultBranch: 'main' },
+      { repoUrl: 'https://github.com/org/web', defaultBranch: 'develop' },
+    ])
+    expect(resolveRepos(cfg, '', 'ou_alice', cfg.bots[1])).toEqual([
+      { repoUrl: 'https://github.com/org/backend', defaultBranch: 'main' },
+      { repoUrl: 'https://github.com/org/shared', defaultBranch: 'main' },
+    ])
+    expect(resolveRepos(cfg, '', 'ou_alice', cfg.bots[2])).toEqual([])
+    expect(resolveRepos(cfg, 'web, shared, web', 'ou_alice', cfg.bots[0])).toEqual([
+      { repoUrl: 'https://github.com/org/web', defaultBranch: 'develop' },
+      { repoUrl: 'https://github.com/org/shared', defaultBranch: 'main' },
+    ])
   })
 })

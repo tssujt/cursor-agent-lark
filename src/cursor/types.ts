@@ -66,6 +66,11 @@ export interface LocalAskUserResponse {
 
 export type LocalAskUserCallback = (args: LocalAskUserArgs) => Promise<LocalAskUserResponse>
 
+export interface CloudRepoInput {
+  url: string
+  startingRef?: string
+}
+
 export interface CreateAgentInput {
   runtime?: AgentRuntime
   agentId?: string
@@ -74,6 +79,7 @@ export interface CreateAgentInput {
   // Cloud runtime options
   repoUrl?: string
   startingRef?: string
+  repos?: CloudRepoInput[]
   autoCreatePR?: boolean
   workOnCurrentBranch?: boolean
   skipReviewerRequest?: boolean

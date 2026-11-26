@@ -42,6 +42,7 @@ export interface TaskView {
   name: string
   prompt: string
   repoUrl: string
+  repoUrls?: string[]
   cwd?: string
   branch: string
   model: string

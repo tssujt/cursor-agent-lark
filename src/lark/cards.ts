@@ -24,10 +24,15 @@ export function buildTaskCard(task: TaskView, note = ''): CardJSON {
   lines.push(`**Status**: ${badge}${task.runStatus ? ` (\`${task.runStatus}\`)` : ''}`)
   lines.push(`**Agent**: \`${task.agentId}\``)
   if (task.runtime === 'local') lines.push('**Runtime**: `local`')
-  if (task.repoUrl)
+  const repoList =
+    task.repoUrls && task.repoUrls.length > 0 ? task.repoUrls : task.repoUrl ? [task.repoUrl] : []
+  if (repoList.length > 1) {
+    lines.push(`**Repositories**: ${repoList.map(shortRepoName).join(', ')}`)
+  } else if (repoList.length === 1) {
     lines.push(
-      `**Repository**: ${shortRepoName(task.repoUrl)}${task.branch ? ` (\`${task.branch}\`)` : ''}`,
+      `**Repository**: ${shortRepoName(repoList[0]!)}${task.branch ? ` (\`${task.branch}\`)` : ''}`,
     )
+  }
   if (task.cwd) lines.push(`**Workspace**: \`${task.cwd}\``)
   if (task.model) lines.push(`**Model**: \`${task.model}\``)
   if (task.pushedBranch) lines.push(`**Pushed Branch**: \`${task.pushedBranch}\``)

@@ -837,6 +837,57 @@ describe('TaskManager end-to-end (stateless multi-bot Lark)', () => {
     }
   })
 
+  it('passes multiple repositories to cloud agent from default_repos and repos: header', async () => {
+    const { cfg, backendCursor, backendMessenger, manager } = createMultiBotEnv()
+    cfg.bots[0]!.defaultRepos = ['backend', 'web-app']
+    try {
+      await manager.handleMessage({
+        botId: 'backend-bot',
+        eventId: 'evt-multi-default',
+        messageId: 'om_multi_1',
+        rootId: '',
+        parentId: '',
+        threadId: '',
+        chatId: 'oc_multi',
+        chatType: 'group',
+        senderId: 'ou_alice',
+        text: '@_user_1 Trace cross-repo API contract',
+        mentioned: true,
+      })
+
+      expect(backendCursor.createReqs).toHaveLength(1)
+      expect(backendCursor.createReqs[0]?.repos).toEqual([
+        { url: 'https://github.com/acme/backend', startingRef: 'main' },
+        { url: 'https://github.com/acme/web-app', startingRef: 'main' },
+      ])
+      expect(JSON.stringify(backendMessenger.repliedCards[0])).toContain(
+        'github.com/acme/backend, github.com/acme/web-app',
+      )
+
+      await manager.handleMessage({
+        botId: 'backend-bot',
+        eventId: 'evt-multi-explicit',
+        messageId: 'om_multi_2',
+        rootId: '',
+        parentId: '',
+        threadId: '',
+        chatId: 'oc_multi',
+        chatType: 'group',
+        senderId: 'ou_alice',
+        text: '@_user_1\nrepos: web-app, backend\nbranch: develop\ntask: Compare both repos',
+        mentioned: true,
+      })
+
+      expect(backendCursor.createReqs).toHaveLength(2)
+      expect(backendCursor.createReqs[1]?.repos).toEqual([
+        { url: 'https://github.com/acme/web-app', startingRef: 'develop' },
+        { url: 'https://github.com/acme/backend', startingRef: 'develop' },
+      ])
+    } finally {
+      await manager.stop()
+    }
+  })
+
   it('supports local runtime with cwd, in-process ask_user, and cross-restart thread continuation', async () => {
     const cfg = createDefaultConfig()
     cfg.cursor.apiKey = 'key_local'

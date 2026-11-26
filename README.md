@@ -41,7 +41,7 @@ Only TOML configuration files are supported. The gateway automatically loads `co
 Set `preset_prompt` in each `[[bots]]` block (TOML multiline strings and environment expansion are supported). The gateway prefixes the initial session creation request with these instructions (not repeated on follow-ups, Steer instructions, or question answers). Missing or empty values preserve existing behavior. This is prompt content, not a separate SDK system role or an authorization boundary.
 
 - **No repository**: a Cloud bot can set `default_repo = ''` and `allow_no_repo = true`. An empty default clears the inherited global repository. The example config requires a repository unless explicitly changed.
-- **Multiple repository choices**: global and per-bot `repos.aliases` can list multiple repositories; select one with `repo: <alias>` in a message. Each Cloud session currently receives only one repository, not multiple simultaneous Cloud repositories.
+- **Multiple repository choices & multi-repo cloud sessions**: global and per-bot `repos.aliases` can list multiple repositories. Set `default_repos = ['backend', 'web-app']` (or pass comma-separated `repos: backend, web-app` in a message) to mount multiple repositories in a single Cloud session.
 - **Multiple local directories**: a Local bot uses `cwd` as its primary directory and `dirs = ['/path/to/another-repo']` for additional directories. They need not be Git repositories, but must exist and be accessible; `default_model` is still required.
 
 ### Lark Open Platform Setup

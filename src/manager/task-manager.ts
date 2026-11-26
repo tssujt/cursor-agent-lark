@@ -4,6 +4,7 @@ import type { GatewayConfig, LarkBotConfig } from '../config.ts'
 import type {
   AgentRuntime,
   AgentSummary,
+  CloudRepoInput,
   CreatedAgentRun,
   CursorClient,
   LocalAskUserCallback,
@@ -21,7 +22,7 @@ import {
   isUserAllowed,
   resolveBotPolicy,
   resolveLocalWorkspace,
-  resolveRepo,
+  resolveRepos,
 } from '../config.ts'
 import { buildPresetPrompt } from '../cursor/prompt.ts'
 import {
@@ -299,6 +300,8 @@ export class TaskManager {
     const agentId = deriveAgentId(bot.config.id, rootMsgId, runtime)
 
     let repoUrl = ''
+    let repoUrls: string[] = []
+    let cloudRepos: CloudRepoInput[] = []
     let branch = ''
     let cwd = ''
 
@@ -324,9 +327,14 @@ export class TaskManager {
       }
     } else {
       try {
-        const resolvedRepo = resolveRepo(this.cfg, parsed.repo, msg.senderId, bot.config)
-        repoUrl = resolvedRepo.repoUrl
-        branch = parsed.branch || resolvedRepo.defaultBranch
+        const resolvedRepos = resolveRepos(this.cfg, parsed.repo, msg.senderId, bot.config)
+        cloudRepos = resolvedRepos.map((r) => ({
+          url: r.repoUrl,
+          startingRef: parsed.branch || r.defaultBranch || undefined,
+        }))
+        repoUrls = cloudRepos.map((r) => r.url)
+        repoUrl = repoUrls[0] ?? ''
+        branch = cloudRepos[0]?.startingRef ?? ''
       } catch (err) {
         await bot.messenger.replyText(
           msg.messageId,
@@ -386,13 +394,14 @@ export class TaskManager {
               prompt: fullPrompt,
               repoUrl: repoUrl || undefined,
               startingRef: branch || undefined,
+              repos: cloudRepos.length > 0 ? cloudRepos : undefined,
               modelId: modelId || undefined,
               mode,
               autoCreatePR,
               workOnCurrentBranch: policy.workOnCurrentBranch,
               skipReviewerRequest: policy.skipReviewerRequest,
               mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
-              metadata: sessionToMetadata(session, repoUrl, branch),
+              metadata: sessionToMetadata(session, repoUrls, branch),
             },
       )
     } catch (err) {
@@ -431,6 +440,7 @@ export class TaskManager {
       name: created.name,
       prompt: parsed.prompt,
       repoUrl,
+      repoUrls: repoUrls.length > 0 ? repoUrls : undefined,
       cwd: cwd || undefined,
       branch,
       model: modelId,
@@ -1523,7 +1533,9 @@ export class TaskManager {
         lines.push(`- ${alias} -> ${parts.join(' | ') || '(empty)'}`)
       }
     }
-    if (policy.defaultRepo) lines.push('', `Default repository: ${policy.defaultRepo}`)
+    if (policy.defaultRepos.length > 1)
+      lines.push('', `Default repositories: ${policy.defaultRepos.join(', ')}`)
+    else if (policy.defaultRepo) lines.push('', `Default repository: ${policy.defaultRepo}`)
     if (policy.runtime === 'local' && policy.localCwd)
       lines.push(`Default local workspace: ${policy.localCwd}`)
     await bot.messenger.replyText(msgId, lines.join('\n'), inThread)
@@ -1557,7 +1569,7 @@ export class TaskManager {
 
 function sessionToMetadata(
   session: SessionContext,
-  repoUrl: string,
+  repoUrls: string[],
   branch: string,
 ): Record<string, string> {
   const meta: Record<string, string> = {
@@ -1567,7 +1579,8 @@ function sessionToMetadata(
     lark_root_msg_id: session.rootMsgId,
     lark_user_id: session.userId,
   }
-  if (repoUrl) meta.lark_repo = repoUrl
+  if (repoUrls[0]) meta.lark_repo = repoUrls[0]
+  if (repoUrls.length > 1) meta.lark_repos = repoUrls.join(',')
   if (branch) meta.lark_branch = branch
   return meta
 }
@@ -1613,6 +1626,17 @@ function buildViewFromSummary(
   run: RunSnapshot | null,
   session: SessionContext,
 ): TaskView {
+  const repoUrls =
+    agent.repos.length > 0
+      ? agent.repos
+      : agent.metadata.lark_repos
+        ? agent.metadata.lark_repos
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : agent.metadata.lark_repo
+          ? [agent.metadata.lark_repo]
+          : []
   const view: TaskView = {
     agentId: agent.agentId,
     runtime: agent.runtime,
@@ -1623,7 +1647,8 @@ function buildViewFromSummary(
     taskStatus: mapRunStatusToTaskStatus(run?.status ?? agent.status ?? 'finished'),
     name: agent.name,
     prompt: '',
-    repoUrl: agent.metadata.lark_repo ?? agent.repos[0] ?? '',
+    repoUrl: repoUrls[0] ?? '',
+    repoUrls: repoUrls.length > 0 ? repoUrls : undefined,
     cwd: agent.cwd ?? session.cwd,
     branch: agent.metadata.lark_branch ?? '',
     model: '',
