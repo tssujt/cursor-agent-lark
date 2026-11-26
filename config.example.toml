@@ -1,0 +1,128 @@
+# cursor-agent-lark configuration example (TOML)
+# String values support ${ENV_VAR} expansion from environment variables / .env.
+
+[cursor]
+runtime = 'cloud' # 'cloud' or 'local'
+api_key = '${CURSOR_API_KEY}'
+base_url = 'https://api.cursor.com'
+default_model = '' # required for local runtime; omit for cloud user/team default
+default_mode = 'agent' # 'agent' or 'plan'
+auto_create_pr = false
+work_on_current_branch = false
+skip_reviewer_request = false
+enable_steer = true
+use_sse = true
+poll_interval = '10s'
+request_timeout = '30s'
+
+# Optional defaults when runtime = 'local'
+# [cursor.local]
+# cwd = '/path/to/workspace'
+# dirs = []
+# sandbox = true
+# auto_review = false
+# setting_sources = [ 'project', 'user' ]
+
+[server]
+hostname = '0.0.0.0'
+port = 8080
+
+[mcp]
+# Built-in HITL `ask_user` MCP server at POST /mcp (used by `runtime = 'cloud'` only;
+# `runtime = 'local'` injects an in-process `ask_user` tool and does not need `public_url`).
+# - Local testing (recommended, zero public URL): leave `public_url = ''` and keep
+#   `hitl.enable_prompt_fallback = true` (Lark uses WebSocket, so no public URL is required).
+# - Local testing real-time Cloud `/mcp` callbacks: expose localhost:8080 via an HTTPS tunnel
+#   (e.g. `cloudflared tunnel --url http://localhost:8080` or `ngrok http 8080`) and set `public_url`
+#   to that public HTTPS URL (do not use localhost/127.0.0.1).
+# - Production (`cloud`): reverse-proxy `/mcp` (and optionally `/healthz`) over HTTPS and set `public_url`.
+public_url = '' # e.g. 'https://cursor-gw.example.com' ('/mcp' is appended automatically if omitted)
+# Bearer token for POST /mcp & HMAC signing key for `?ctx=` (e.g. `openssl rand -hex 32`); optional when `public_url` is empty.
+auth_token = '${MCP_AUTH_TOKEN}'
+# MCP server name exposed to Cloud Agents (keep default unless you need to avoid a name clash).
+server_name = 'lark-hitl'
+
+# Optional: global external MCP servers (supports http, sse, stdio)
+# [mcp.servers.linear]
+# type = 'http'
+# url = 'https://mcp.linear.app/sse'
+# headers = { Authorization = 'Bearer ${LINEAR_API_KEY}' }
+#
+# [mcp.servers.github]
+# type = 'stdio'
+# command = 'npx'
+# args = [ '-y', '@modelcontextprotocol/server-github' ]
+# env = { GITHUB_TOKEN = '${GITHUB_TOKEN}' }
+
+[hitl]
+# Recommended `true`: falls back to Prompt-JSON question cards when `mcp.public_url` is empty or unused.
+enable_prompt_fallback = true
+# `false`: only the session creator can answer question cards, follow up, or cancel; `true`: any chat member can collaborate.
+allow_any_chat_member_answer = false
+
+[auth]
+# Optional global Lark open_id allowlist; empty allows all users in the tenant.
+allowed_users = []
+
+[repos]
+default_repo = ''
+allow_unlisted_repos = false
+allow_no_repo = false
+
+[repos.aliases.backend]
+url = 'https://github.com/your-org/backend'
+# path = '/path/to/local/backend' # optional local directory when using runtime = 'local'
+default_branch = 'main'
+allowed_users = []
+
+[repos.aliases.web-app]
+url = 'https://github.com/your-org/web-app'
+default_branch = 'main'
+allowed_users = []
+
+# Define one or more Lark bots. Each bot can override repos, model, API key, permissions, and MCP servers.
+[[bots]]
+id = 'backend-bot'
+name = 'Backend Bot'
+app_id = 'cli_xxxxxxxxxxxxxxxx'
+app_secret = '${LARK_BACKEND_APP_SECRET}'
+domain = 'feishu' # 'feishu' (China) or 'lark' (International)
+log_level = 'info'
+default_repo = 'backend'
+preset_prompt = '''
+You are the backend development assistant. Prefer focused changes and include regression tests.
+'''
+# require_mention = true # set false to auto-create threads for top-level group messages without @mention
+# default_model = 'composer-2'
+# default_mode = 'agent'
+# cursor_api_key = '${CURSOR_BACKEND_API_KEY}'
+# allowed_users = []
+
+[[bots]]
+id = 'frontend-bot'
+name = 'Frontend Bot'
+app_id = 'cli_yyyyyyyyyyyyyyyy'
+app_secret = '${LARK_FRONTEND_APP_SECRET}'
+domain = 'lark'
+log_level = 'info'
+default_repo = 'web-app'
+preset_prompt = '''
+You are the frontend development assistant. Prioritize accessibility and consistent UI behavior.
+'''
+
+# For a cloud bot without a repository, set default_repo = '' and allow_no_repo = true
+# inside that bot's [[bots]] block. An empty default_repo clears the global default.
+
+# Optional: local runtime bot executing against a directory on this machine
+# [[bots]]
+# id = 'local-bot'
+# name = 'Local Dev Bot'
+# app_id = 'cli_zzzzzzzzzzzzzzzz'
+# app_secret = '${LARK_LOCAL_APP_SECRET}'
+# domain = 'lark'
+# runtime = 'local'
+# cwd = '/path/to/workspace'
+# dirs = [ '/path/to/another-repo' ] # additional local directories in the same session
+# require_mention = true # set false to auto-create threads for top-level group messages without @mention
+# default_model = 'composer-2'
+# sandbox = true
