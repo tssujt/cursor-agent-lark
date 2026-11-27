@@ -44,6 +44,66 @@ export interface LarkBotHandlers {
   onCardAction: (event: LarkCardEvent) => Promise<LarkCardReply>
 }
 
+export interface LarkMention {
+  key?: string
+  id?: {
+    union_id?: string
+    user_id?: string
+    open_id?: string
+  }
+  name?: string
+  tenant_key?: string
+}
+
+export interface BotIdentity {
+  openId?: string
+  appName?: string
+  configName?: string
+}
+
+export function isBotMentioned(
+  mentions: ReadonlyArray<LarkMention> | undefined,
+  identity: BotIdentity,
+): boolean {
+  if (!Array.isArray(mentions) || mentions.length === 0) return false
+  if (identity.openId) {
+    return mentions.some((m) => m.id?.open_id === identity.openId)
+  }
+  const names = [identity.appName, identity.configName]
+    .map((n) => n?.trim().toLowerCase())
+    .filter((n): n is string => Boolean(n))
+  if (names.length === 0) return false
+  return mentions.some((m) => {
+    const mentionName = m.name?.trim().toLowerCase()
+    return Boolean(mentionName && names.includes(mentionName))
+  })
+}
+
+export function normalizeMentionText(
+  text: string,
+  mentions: ReadonlyArray<LarkMention> | undefined,
+  identity: BotIdentity,
+): string {
+  if (!text || !Array.isArray(mentions) || mentions.length === 0) return text
+  const sorted = [...mentions]
+    .filter((m) => Boolean(m.key))
+    .sort((a, b) => (b.key?.length ?? 0) - (a.key?.length ?? 0))
+
+  let out = text
+  for (const m of sorted) {
+    const key = m.key!
+    const isSelf = identity.openId
+      ? m.id?.open_id === identity.openId
+      : isBotMentioned([m], identity)
+    if (isSelf) {
+      out = out.split(key).join('')
+    } else if (m.name) {
+      out = out.split(key).join(`@${m.name}`)
+    }
+  }
+  return out.replace(/[ \t]+\n/g, '\n').trim()
+}
+
 export class LarkBot {
   readonly id: string
   readonly name: string
@@ -53,6 +113,9 @@ export class LarkBot {
   private readonly wsClient: lark.WSClient
   private readonly eventDispatcher: lark.EventDispatcher
   private readonly logger: Logger
+  private botOpenId = ''
+  private botAppName = ''
+  private botInfoInFlight: Promise<void> | null = null
 
   constructor(cfg: LarkBotConfig, handlers: LarkBotHandlers, logger: Logger = noopLogger) {
     this.id = cfg.id
@@ -92,9 +155,19 @@ export class LarkBot {
 
         const rootId = data.message.root_id ?? ''
         const parentId = data.message.parent_id ?? ''
-        const mentioned = Array.isArray(data.message.mentions) && data.message.mentions.length > 0
-        const text = extractMessageText(messageType, data.message.content)
-        if (!text && !(mentioned && (parentId || rootId))) {
+        const mentions = Array.isArray(data.message.mentions) ? data.message.mentions : []
+        if (mentions.length > 0 && !this.botOpenId) {
+          await this.ensureBotIdentity()
+        }
+        const identity: BotIdentity = {
+          openId: this.botOpenId || undefined,
+          appName: this.botAppName || undefined,
+          configName: this.name || undefined,
+        }
+        const mentioned = isBotMentioned(mentions, identity)
+        const rawText = extractMessageText(messageType, data.message.content)
+        const text = normalizeMentionText(rawText, mentions, identity)
+        if (!text && !mentioned) {
           this.logger.info('Ignoring unsupported or empty Lark message', {
             botId: this.id,
             messageId,
@@ -221,9 +294,11 @@ export class LarkBot {
   }
 
   async start(): Promise<void> {
+    await this.ensureBotIdentity()
     this.logger.info('Starting Lark WebSocket long connection', {
       botId: this.id,
       domain: this.config.domain,
+      botOpenId: this.botOpenId || undefined,
     })
     await this.wsClient.start({
       eventDispatcher: this.eventDispatcher,
@@ -232,6 +307,56 @@ export class LarkBot {
 
   stop(): void {
     this.wsClient.close({ force: true })
+  }
+
+  private async ensureBotIdentity(): Promise<void> {
+    if (this.botOpenId) return
+    if (!this.botInfoInFlight) {
+      this.botInfoInFlight = this.fetchBotIdentity().finally(() => {
+        this.botInfoInFlight = null
+      })
+    }
+    await this.botInfoInFlight
+  }
+
+  private async fetchBotIdentity(): Promise<void> {
+    try {
+      const res = await this.client.request<{
+        code?: number
+        msg?: string
+        bot?: { open_id?: string; app_name?: string }
+        data?: { bot?: { open_id?: string; app_name?: string } }
+      }>({
+        method: 'GET',
+        url: '/open-apis/bot/v3/info',
+      })
+      if (res && res.code !== undefined && res.code !== 0) {
+        this.logger.warn('Failed to fetch Lark bot info', {
+          botId: this.id,
+          code: res.code,
+          msg: res.msg ?? '',
+        })
+        return
+      }
+      const botInfo = res?.bot ?? res?.data?.bot
+      if (botInfo?.open_id) this.botOpenId = botInfo.open_id
+      if (botInfo?.app_name) this.botAppName = botInfo.app_name
+      if (this.botOpenId) {
+        this.logger.info(
+          'Resolved Lark bot identity',
+          compactFields({
+            botId: this.id,
+            botOpenId: this.botOpenId,
+            botAppName: this.botAppName,
+          }),
+        )
+      }
+    } catch (err) {
+      this.logger.warn('Failed to fetch Lark bot info', {
+        botId: this.id,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
   }
 }
 
