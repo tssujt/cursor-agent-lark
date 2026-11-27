@@ -2,6 +2,7 @@ import type * as lark from '@larksuiteoapi/node-sdk'
 import { describe, expect, it } from 'bun:test'
 import type { Logger } from '../src/logger.ts'
 import { buildHelpCard } from '../src/lark/cards.ts'
+import { extractMessageText } from '../src/lark/message-content.ts'
 import { LarkMessenger } from '../src/lark/messenger.ts'
 
 interface LogEntry {
@@ -76,5 +77,47 @@ describe('LarkMessenger logging', () => {
       threadId: 'omt_1',
       cardTitle: card.header.title.content,
     })
+  })
+
+  it('extracts text from post and interactive alert cards and fetches quoted messages', async () => {
+    const alertCardJson = JSON.stringify({
+      title: 'prod-k8s cronjob 异常报警',
+      elements: [
+        [{ tag: 'text', text: '报警时间：2026-11-26 17:57:57' }],
+        [{ tag: 'text', text: 'pod：spaceport-cron-tianji-ftp-forecast-29928106' }],
+      ],
+    })
+    expect(extractMessageText('interactive', alertCardJson)).toBe(
+      'prod-k8s cronjob 异常报警\n报警时间：2026-11-26 17:57:57\npod：spaceport-cron-tianji-ftp-forecast-29928106',
+    )
+
+    const localePostJson = JSON.stringify({
+      zh_cn: {
+        title: '告警通知',
+        content: [[{ tag: 'text', text: '服务超时' }]],
+      },
+    })
+    expect(extractMessageText('post', localePostJson)).toBe('告警通知\n服务超时')
+
+    const fakeClient = {
+      im: {
+        v1: {
+          message: {
+            get: async () => ({
+              code: 0,
+              data: {
+                items: [{ msg_type: 'interactive', body: { content: alertCardJson } }],
+              },
+            }),
+          },
+        },
+      },
+    } as unknown as lark.Client
+
+    const { logger, entries } = createMemoryLogger()
+    const messenger = new LarkMessenger(fakeClient, logger, 'ops-bot')
+    const fetched = await messenger.getMessageText('om_alert_1')
+    expect(fetched).toContain('prod-k8s cronjob 异常报警')
+    expect(entries.at(-1)?.msg).toBe('Fetched quoted Lark message')
   })
 })

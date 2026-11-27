@@ -228,7 +228,28 @@ export class TaskManager {
       return
     }
 
-    switch (parsed.action) {
+    // If the user replied to / quoted a message (e.g. an alert card) and mentioned the bot to start a new session,
+    // fetch the quoted message content and include it in the user message.
+    const quotedMsgId = !existingSession ? msg.parentId || msg.rootId : ''
+    let effectiveParsed = parsed
+    if (
+      quotedMsgId &&
+      (parsed.action === 'create' || (parsed.action === 'help' && !strippedText))
+    ) {
+      const quotedText = await this.fetchQuotedMessageText(bot, quotedMsgId)
+      if (quotedText) {
+        const combinedPrompt = parsed.prompt
+          ? `[Quoted Message]\n${quotedText}\n\n${parsed.prompt}`
+          : quotedText
+        effectiveParsed = {
+          ...parsed,
+          action: 'create',
+          prompt: combinedPrompt,
+        }
+      }
+    }
+
+    switch (effectiveParsed.action) {
       case 'help':
         await bot.messenger.replyCard(
           msg.messageId,
@@ -246,13 +267,13 @@ export class TaskManager {
         await this.replyModelsList(bot, msg.messageId, inThread)
         return
       case 'status':
-        await this.handleStatusCommand(bot, msg, parsed.taskId, inThread)
+        await this.handleStatusCommand(bot, msg, effectiveParsed.taskId, inThread)
         return
       case 'cancel':
-        await this.handleCancelCommand(bot, msg, parsed.taskId, inThread)
+        await this.handleCancelCommand(bot, msg, effectiveParsed.taskId, inThread)
         return
       case 'followup':
-        if (!parsed.prompt) {
+        if (!effectiveParsed.prompt) {
           await bot.messenger.replyText(
             msg.messageId,
             'Please provide follow-up instructions, e.g. `/followup Add unit tests`.',
@@ -260,10 +281,17 @@ export class TaskManager {
           )
           return
         }
-        await this.handleFollowUpCommand(bot, msg, parsed.taskId, parsed.prompt, false, inThread)
+        await this.handleFollowUpCommand(
+          bot,
+          msg,
+          effectiveParsed.taskId,
+          effectiveParsed.prompt,
+          false,
+          inThread,
+        )
         return
       case 'steer':
-        if (!parsed.prompt) {
+        if (!effectiveParsed.prompt) {
           await bot.messenger.replyText(
             msg.messageId,
             'Please provide steer instructions, e.g. `/steer Also add metrics`.',
@@ -271,10 +299,17 @@ export class TaskManager {
           )
           return
         }
-        await this.handleFollowUpCommand(bot, msg, parsed.taskId, parsed.prompt, true, inThread)
+        await this.handleFollowUpCommand(
+          bot,
+          msg,
+          effectiveParsed.taskId,
+          effectiveParsed.prompt,
+          true,
+          inThread,
+        )
         return
       case 'create':
-        if (!parsed.prompt) {
+        if (!effectiveParsed.prompt) {
           await bot.messenger.replyCard(
             msg.messageId,
             buildHelpCard(Boolean(getMcpEndpointUrl(this.cfg)), bot.config.name),
@@ -282,7 +317,7 @@ export class TaskManager {
           )
           return
         }
-        await this.createSession(bot, msg, parsed, inThread)
+        await this.createSession(bot, msg, effectiveParsed, inThread)
     }
   }
 
@@ -1552,6 +1587,21 @@ export class TaskManager {
         `Failed to list Cursor models: ${errorMessage(err)}`,
         inThread,
       )
+    }
+  }
+
+  private async fetchQuotedMessageText(bot: BotRuntime, messageId: string): Promise<string> {
+    if (!messageId || !bot.messenger.getMessageText) return ''
+    try {
+      const text = await bot.messenger.getMessageText(messageId)
+      return text ? stripMentions(text) : ''
+    } catch (err) {
+      this.logger.warn('Failed to fetch quoted Lark message', {
+        botId: bot.config.id,
+        messageId,
+        error: errorMessage(err),
+      })
+      return ''
     }
   }
 

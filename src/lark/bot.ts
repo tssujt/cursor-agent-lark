@@ -4,7 +4,10 @@ import type { Logger } from '../logger.ts'
 import type { CardJSON } from './cards.ts'
 import type { Messenger } from './messenger.ts'
 import { noopLogger } from '../logger.ts'
+import { extractMessageText } from './message-content.ts'
 import { LarkMessenger } from './messenger.ts'
+
+export { extractMessageText } from './message-content.ts'
 
 export interface LarkMessageEvent {
   botId: string
@@ -87,8 +90,11 @@ export class LarkBot {
           return
         }
 
+        const rootId = data.message.root_id ?? ''
+        const parentId = data.message.parent_id ?? ''
+        const mentioned = Array.isArray(data.message.mentions) && data.message.mentions.length > 0
         const text = extractMessageText(messageType, data.message.content)
-        if (!text) {
+        if (!text && !(mentioned && (parentId || rootId))) {
           this.logger.info('Ignoring unsupported or empty Lark message', {
             botId: this.id,
             messageId,
@@ -105,14 +111,14 @@ export class LarkBot {
           botId: this.id,
           eventId: rawEvent.event_id ?? '',
           messageId,
-          rootId: data.message.root_id ?? '',
-          parentId: data.message.parent_id ?? '',
+          rootId,
+          parentId,
           threadId: data.message.thread_id ?? '',
           chatId,
           chatType,
           senderId,
           text,
-          mentioned: Array.isArray(data.message.mentions) && data.message.mentions.length > 0,
+          mentioned,
         }
 
         this.logger.info(
@@ -227,39 +233,6 @@ export class LarkBot {
   stop(): void {
     this.wsClient.close({ force: true })
   }
-}
-
-export function extractMessageText(
-  msgType: string | undefined,
-  content: string | undefined,
-): string {
-  if (!content) return ''
-  try {
-    if (msgType === 'text') {
-      const parsed = JSON.parse(content) as { text?: string }
-      return parsed.text?.trim() ?? ''
-    }
-    if (msgType === 'post') {
-      const parsed = JSON.parse(content) as {
-        title?: string
-        content?: Array<Array<{ tag?: string; text?: string }>>
-      }
-      const lines: string[] = []
-      if (parsed.title?.trim()) lines.push(parsed.title.trim())
-      for (const para of parsed.content ?? []) {
-        const line = para
-          .filter((el) => el.tag === 'text' || el.tag === 'a')
-          .map((el) => el.text ?? '')
-          .join('')
-          .trim()
-        if (line) lines.push(line)
-      }
-      return lines.join('\n')
-    }
-  } catch {
-    return ''
-  }
-  return ''
 }
 
 function parseFormValue(

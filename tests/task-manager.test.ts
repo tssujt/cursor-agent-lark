@@ -34,9 +34,14 @@ class FakeMessenger implements Messenger {
     []
   readonly updatedCards = new Map<string, CardJSON>()
   readonly texts: string[] = []
+  readonly storedMessages = new Map<string, string>()
 
   private nextId(prefix: string): string {
     return `${prefix}_${++this.seq}`
+  }
+
+  async getMessageText(messageId: string): Promise<string | null> {
+    return this.storedMessages.get(messageId) ?? null
   }
 
   async sendCard(_chatId: string, card: CardJSON): Promise<string> {
@@ -883,6 +888,79 @@ describe('TaskManager end-to-end (stateless multi-bot Lark)', () => {
         { url: 'https://github.com/acme/web-app', startingRef: 'develop' },
         { url: 'https://github.com/acme/backend', startingRef: 'develop' },
       ])
+    } finally {
+      await manager.stop()
+    }
+  })
+
+  it('fetches quoted message content into user message when replying and @mentioning the bot', async () => {
+    const { cfg, backendCursor, backendMessenger, manager } = createMultiBotEnv()
+    cfg.bots[0]!.presetPrompt = 'Investigate production alerts.'
+    backendMessenger.storedMessages.set(
+      'om_alert_1',
+      'prod-k8s cronjob 异常报警\npod：spaceport-cron-tianji-ftp-forecast-29928106',
+    )
+    backendMessenger.storedMessages.set('om_alert_2', 'HTTP 502 spike on /v2.6/weather')
+
+    try {
+      // 1. Replying to an alert message with only @Bot uses the quoted alert text as User Message (no help card)
+      await manager.handleMessage({
+        botId: 'backend-bot',
+        eventId: 'evt-quote-only-at',
+        messageId: 'om_reply_1',
+        rootId: 'om_alert_1',
+        parentId: 'om_alert_1',
+        threadId: '',
+        chatId: 'oc_ops',
+        chatType: 'group',
+        senderId: 'ou_alice',
+        text: '@_user_1',
+        mentioned: true,
+      })
+
+      expect(backendCursor.createReqs).toHaveLength(1)
+      expect(backendCursor.createReqs[0]?.prompt).toStartWith(
+        '[Bot Instructions]\nInvestigate production alerts.\n\n[User Message]\nprod-k8s cronjob 异常报警\npod：spaceport-cron-tianji-ftp-forecast-29928106',
+      )
+
+      // 2. Replying with @Bot + extra instructions includes both [Quoted Message] and the user's instruction
+      await manager.handleMessage({
+        botId: 'backend-bot',
+        eventId: 'evt-quote-with-text',
+        messageId: 'om_reply_2',
+        rootId: 'om_alert_2',
+        parentId: 'om_alert_2',
+        threadId: '',
+        chatId: 'oc_ops',
+        chatType: 'group',
+        senderId: 'ou_alice',
+        text: '@_user_1 帮我查一下最近 15 分钟日志',
+        mentioned: true,
+      })
+
+      expect(backendCursor.createReqs).toHaveLength(2)
+      expect(backendCursor.createReqs[1]?.prompt).toStartWith(
+        '[Bot Instructions]\nInvestigate production alerts.\n\n[User Message]\n[Quoted Message]\nHTTP 502 spike on /v2.6/weather\n\n帮我查一下最近 15 分钟日志',
+      )
+
+      // 3. Bare @Bot without any quoted message still shows the help card
+      const cardsBeforeHelp = backendMessenger.repliedCards.length
+      await manager.handleMessage({
+        botId: 'backend-bot',
+        eventId: 'evt-bare-at',
+        messageId: 'om_bare_at',
+        rootId: '',
+        parentId: '',
+        threadId: '',
+        chatId: 'oc_ops',
+        chatType: 'group',
+        senderId: 'ou_alice',
+        text: '@_user_1',
+        mentioned: true,
+      })
+      expect(backendCursor.createReqs).toHaveLength(2)
+      expect(backendMessenger.repliedCards).toHaveLength(cardsBeforeHelp + 1)
+      expect(JSON.stringify(backendMessenger.repliedCards.at(-1))).toContain('Start a Session')
     } finally {
       await manager.stop()
     }

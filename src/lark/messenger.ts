@@ -2,6 +2,7 @@ import type * as lark from '@larksuiteoapi/node-sdk'
 import type { Logger } from '../logger.ts'
 import type { CardJSON } from './cards.ts'
 import { noopLogger } from '../logger.ts'
+import { extractMessageText } from './message-content.ts'
 
 export interface ReplyResult {
   messageId: string
@@ -14,6 +15,7 @@ export interface Messenger {
   updateCard: (messageId: string, card: CardJSON) => Promise<void>
   replyText: (replyToMsgId: string, text: string, replyInThread?: boolean) => Promise<ReplyResult>
   sendText: (chatId: string, text: string) => Promise<string>
+  getMessageText?: (messageId: string) => Promise<string | null>
 }
 
 export class LarkMessenger implements Messenger {
@@ -148,6 +150,27 @@ export class LarkMessenger implements Messenger {
       }),
     )
     return messageId
+  }
+
+  async getMessageText(messageId: string): Promise<string | null> {
+    if (!messageId) return null
+    const res = await this.client.im.v1.message.get({
+      path: { message_id: messageId },
+    })
+    assertSuccess('getMessageText', res)
+    const item = res.data?.items?.[0]
+    if (!item) return null
+    const text = extractMessageText(item.msg_type, item.body?.content)
+    this.logger.info(
+      'Fetched quoted Lark message',
+      compactFields({
+        botId: this.botId,
+        messageId,
+        messageType: item.msg_type,
+        text: text ? previewText(text) : '(empty)',
+      }),
+    )
+    return text || null
   }
 }
 
