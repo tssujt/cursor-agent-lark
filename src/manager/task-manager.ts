@@ -142,10 +142,15 @@ export class TaskManager {
     }
 
     const inThread = shouldReplyInThread(msg)
+    const strippedText = stripMentions(msg.text)
+    const startsWithSlash = strippedText.startsWith('/')
+    const parsed = parseCommand(msg.text)
+    const isExplicitNew = /^\/(?:new|create|run)\b/i.test(strippedText)
+    const isSlashCommand = startsWithSlash && (parsed.action !== 'create' || isExplicitNew)
 
-    // 1. Direct reply to a pending HITL question card -> answer that question.
+    // 1. Direct reply to a pending HITL question card -> answer that question (unless it is a slash command like /cancel).
     const pendingByMsg = this.findPendingQuestionForReply(msg.parentId, msg.rootId)
-    if (pendingByMsg && pendingByMsg.botId === msg.botId) {
+    if (pendingByMsg && pendingByMsg.botId === msg.botId && !isSlashCommand) {
       if (!isUserAllowed(this.cfg, msg.senderId, bot.config)) {
         await bot.messenger.replyText(
           msg.messageId,
@@ -154,8 +159,7 @@ export class TaskManager {
         )
         return
       }
-      const answerText = stripMentions(msg.text)
-      if (!answerText) {
+      if (!strippedText) {
         await bot.messenger.replyText(
           msg.messageId,
           'Answer cannot be empty. Please reply again or click a card button.',
@@ -163,14 +167,9 @@ export class TaskManager {
         )
         return
       }
-      await this.submitTextAnswer(bot, msg, pendingByMsg, answerText, inThread)
+      await this.submitTextAnswer(bot, msg, pendingByMsg, strippedText, inThread)
       return
     }
-
-    const strippedText = stripMentions(msg.text)
-    const startsWithSlash = strippedText.startsWith('/')
-    const parsed = parseCommand(msg.text)
-    const isExplicitNew = /^\/(?:new|create|run)\b/i.test(strippedText)
 
     // 2. One thread = one Agent session: resolve existing session for messages inside a thread or reply.
     const existingSession =
@@ -178,12 +177,7 @@ export class TaskManager {
         ? await this.resolveSessionFromReply(bot, msg)
         : null
 
-    if (
-      existingSession &&
-      Boolean(strippedText) &&
-      !isExplicitNew &&
-      (!startsWithSlash || parsed.action === 'create')
-    ) {
+    if (existingSession && Boolean(strippedText) && !isSlashCommand) {
       if (!isUserAllowed(this.cfg, msg.senderId, bot.config)) {
         await bot.messenger.replyText(
           msg.messageId,

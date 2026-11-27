@@ -1125,6 +1125,48 @@ describe('TaskManager end-to-end (stateless multi-bot Lark)', () => {
       expect(backendCursor.followUpReqs).toHaveLength(2)
       expect(backendCursor.followUpReqs[1]?.agentId).toBe(altAgentId)
       expect(backendCursor.followUpReqs[1]?.prompt).toBe('顺便看下慢查询日志')
+
+      // 4. Slash commands like /cancel inside a thread cancel the session (even without @Bot,
+      // regardless of requireMention, and even while a HITL question card is pending).
+      await manager.handleAskUser({
+        agentId: autoAgentId,
+        question: 'Proceed with rollback?',
+        options: [{ label: 'Yes', value: 'yes' }],
+      })
+      const feQuestionMsgId = frontendMessenger.replyCardCalls.at(-1)!.messageId
+
+      await manager.handleMessage({
+        botId: 'frontend-bot',
+        eventId: 'evt-rm-false-cancel-in-thread',
+        messageId: 'om_auto_cancel',
+        rootId: 'om_auto_1',
+        parentId: feQuestionMsgId,
+        threadId: 'omt_om_auto_1',
+        chatId: 'oc_rm_group',
+        chatType: 'group',
+        senderId: 'ou_alice',
+        text: '/cancel',
+        mentioned: false,
+      })
+      expect(frontendCursor.followUpReqs).toHaveLength(1)
+      expect(frontendCursor.cancelledRuns).toContain('run-2')
+      expect(frontendMessenger.texts.at(-1)).toContain(`Session \`${autoAgentId}\` cancelled.`)
+
+      await manager.handleMessage({
+        botId: 'backend-bot',
+        eventId: 'evt-rm-true-cancel-in-thread',
+        messageId: 'om_alt_cancel',
+        rootId: 'om_alert_alt_root',
+        parentId: 'om_alert_alt_root',
+        threadId: 'omt_om_alt_at',
+        chatId: 'oc_rm_group',
+        chatType: 'group',
+        senderId: 'ou_alice',
+        text: '/cancel',
+        mentioned: false,
+      })
+      expect(backendCursor.cancelledRuns).toContain('run-4')
+      expect(backendMessenger.texts.at(-1)).toContain(`Session \`${altAgentId}\` cancelled.`)
     } finally {
       await manager.stop()
       await restartedManager.stop()
