@@ -154,9 +154,25 @@ export class EphemeralCache {
   readonly answeredQuestions = new TtlSet(24 * 60 * 60_000)
   readonly cardMsgIds = new Map<string, string>()
   readonly sessions = new Map<string, SessionContext>()
+  readonly threadSessions = new Map<string, string>()
+  readonly rootMsgSessions = new Map<string, string>()
   readonly pendingQuestions = new Map<string, QuestionView>()
   readonly pendingQuestionsByMsgId = new Map<string, QuestionView>()
   readonly pendingFollowUps = new Map<string, string[]>()
+
+  indexSession(
+    session: SessionContext,
+    opts?: { threadId?: string; rootMsgIds?: Array<string | undefined> },
+  ): void {
+    this.sessions.set(session.agentId, session)
+    if (session.rootMsgId) this.rootMsgSessions.set(session.rootMsgId, session.agentId)
+    if (opts?.threadId) this.threadSessions.set(opts.threadId, session.agentId)
+    if (opts?.rootMsgIds) {
+      for (const id of opts.rootMsgIds) {
+        if (id) this.rootMsgSessions.set(id, session.agentId)
+      }
+    }
+  }
 
   setPendingQuestion(q: QuestionView): void {
     this.pendingQuestions.set(q.agentId, q)

@@ -102,7 +102,9 @@ export class TaskManager {
           .catch(() => null)
         if (!latestRun || isTerminalRunStatus(latestRun.status)) continue
 
-        this.cache.sessions.set(agent.agentId, session)
+        this.cache.indexSession(session, {
+          rootMsgIds: [session.rootMsgId, agent.metadata.lark_quoted_root_id],
+        })
         const view = buildViewFromSummary(agent, latestRun, session)
         this.logger.info('Resuming active cloud agent monitor', {
           botId: session.botId,
@@ -176,7 +178,12 @@ export class TaskManager {
         ? await this.resolveSessionFromReply(bot, msg)
         : null
 
-    if (existingSession && !isExplicitNew && (!startsWithSlash || parsed.action === 'create')) {
+    if (
+      existingSession &&
+      Boolean(strippedText) &&
+      !isExplicitNew &&
+      (!startsWithSlash || parsed.action === 'create')
+    ) {
       if (!isUserAllowed(this.cfg, msg.senderId, bot.config)) {
         await bot.messenger.replyText(
           msg.messageId,
@@ -185,7 +192,7 @@ export class TaskManager {
         )
         return
       }
-      const followText = parsed.action === 'create' ? parsed.prompt || strippedText : strippedText
+      const followText = strippedText
       const pendingQ = this.cache.pendingQuestions.get(existingSession.agentId)
       if (pendingQ) {
         await this.submitTextAnswer(bot, msg, pendingQ, followText, inThread)
@@ -331,7 +338,11 @@ export class TaskManager {
     const runtime: AgentRuntime = policy.runtime
     const modelId = parsed.model || policy.defaultModel
     const mode = parsed.mode ?? policy.defaultMode
-    const rootMsgId = msg.rootId || msg.messageId
+    // If the trigger message is already inside a Lark thread, bind to that thread's root message;
+    // otherwise replying in thread to `msg.messageId` opens a new thread rooted at `msg.messageId`
+    // (even when `msg` quoted an earlier top-level message in the main chat).
+    const rootMsgId = msg.threadId ? msg.rootId || msg.messageId : msg.messageId
+    const quotedRootId = !msg.threadId && msg.rootId && msg.rootId !== rootMsgId ? msg.rootId : ''
     const agentId = deriveAgentId(bot.config.id, rootMsgId, runtime)
 
     let repoUrl = ''
@@ -436,7 +447,7 @@ export class TaskManager {
               workOnCurrentBranch: policy.workOnCurrentBranch,
               skipReviewerRequest: policy.skipReviewerRequest,
               mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
-              metadata: sessionToMetadata(session, repoUrls, branch),
+              metadata: sessionToMetadata(session, repoUrls, branch, quotedRootId),
             },
       )
     } catch (err) {
@@ -462,7 +473,11 @@ export class TaskManager {
       return
     }
 
-    this.cache.sessions.set(created.agentId, { ...session, agentId: created.agentId })
+    const createdSession: SessionContext = { ...session, agentId: created.agentId }
+    this.cache.indexSession(createdSession, {
+      threadId: msg.threadId,
+      rootMsgIds: [rootMsgId, msg.messageId],
+    })
 
     const view: TaskView = {
       agentId: created.agentId,
@@ -495,6 +510,12 @@ export class TaskManager {
       const reply = await bot.messenger.replyCard(msg.messageId, buildTaskCard(view), inThread)
       view.larkCardMsgId = reply.messageId
       if (reply.messageId) this.cache.cardMsgIds.set(view.agentId, reply.messageId)
+      if (reply.threadId || reply.rootId) {
+        this.cache.indexSession(createdSession, {
+          threadId: reply.threadId,
+          rootMsgIds: [reply.rootId],
+        })
+      }
     } catch (err) {
       this.logger.error('Failed to send Lark task card', {
         botId: bot.config.id,
@@ -1303,12 +1324,32 @@ export class TaskManager {
     bot: BotRuntime,
     msg: LarkMessageEvent,
   ): Promise<SessionContext | null> {
+    if (msg.threadId) {
+      const byThreadAgentId = this.cache.threadSessions.get(msg.threadId)
+      if (byThreadAgentId) {
+        const cached = this.cache.sessions.get(byThreadAgentId)
+        if (cached && cached.botId === bot.config.id) return cached
+      }
+    }
+
     const policy = resolveBotPolicy(this.cfg, bot.config)
-    const candidateRoots = [msg.rootId, msg.parentId].filter(Boolean)
+    const candidateRoots = Array.from(new Set([msg.rootId, msg.parentId].filter(Boolean)))
     for (const rootId of candidateRoots) {
+      const indexedAgentId = this.cache.rootMsgSessions.get(rootId)
+      if (indexedAgentId) {
+        const cached = this.cache.sessions.get(indexedAgentId)
+        if (cached && cached.botId === bot.config.id) {
+          if (msg.threadId) this.cache.threadSessions.set(msg.threadId, cached.agentId)
+          return cached
+        }
+      }
+
       const derivedId = deriveAgentId(bot.config.id, rootId, policy.runtime)
       const cached = this.cache.sessions.get(derivedId)
-      if (cached) return cached
+      if (cached) {
+        if (msg.threadId) this.cache.threadSessions.set(msg.threadId, cached.agentId)
+        return cached
+      }
 
       const remote = await bot.cursor
         .getAgent(derivedId, {
@@ -1331,17 +1372,23 @@ export class TaskManager {
           cwd:
             remote.cwd || (policy.runtime === 'local' ? policy.localCwd || undefined : undefined),
         }
-        this.cache.sessions.set(session.agentId, session)
+        this.cache.indexSession(session, {
+          threadId: msg.threadId,
+          rootMsgIds: [rootId, remote.metadata.lark_quoted_root_id],
+        })
         return session
       }
     }
 
-    // In p2p chats, a user may reply directly to the bot's card message ID.
-    if (msg.parentId) {
+    // In p2p chats (or direct replies to the task card), match by the bot's card message ID.
+    for (const targetId of candidateRoots) {
       for (const [agentId, cardMsgId] of this.cache.cardMsgIds) {
-        if (cardMsgId === msg.parentId) {
+        if (cardMsgId === targetId) {
           const cached = this.cache.sessions.get(agentId)
-          if (cached && cached.botId === bot.config.id) return cached
+          if (cached && cached.botId === bot.config.id) {
+            if (msg.threadId) this.cache.threadSessions.set(msg.threadId, cached.agentId)
+            return cached
+          }
         }
       }
     }
@@ -1621,6 +1668,7 @@ function sessionToMetadata(
   session: SessionContext,
   repoUrls: string[],
   branch: string,
+  quotedRootId = '',
 ): Record<string, string> {
   const meta: Record<string, string> = {
     lark_bot_id: session.botId,
@@ -1629,6 +1677,7 @@ function sessionToMetadata(
     lark_root_msg_id: session.rootMsgId,
     lark_user_id: session.userId,
   }
+  if (quotedRootId) meta.lark_quoted_root_id = quotedRootId
   if (repoUrls[0]) meta.lark_repo = repoUrls[0]
   if (repoUrls.length > 1) meta.lark_repos = repoUrls.join(',')
   if (branch) meta.lark_branch = branch

@@ -7,6 +7,7 @@ import { extractMessageText } from './message-content.ts'
 export interface ReplyResult {
   messageId: string
   threadId: string
+  rootId?: string
 }
 
 export interface Messenger {
@@ -63,9 +64,10 @@ export class LarkMessenger implements Messenger {
       },
     })
     assertSuccess('replyCard', res)
-    const result = {
+    const result: ReplyResult = {
       messageId: res.data?.message_id ?? '',
       threadId: res.data?.thread_id ?? '',
+      rootId: res.data?.root_id ?? '',
     }
     this.logger.info(
       'Replied Lark card',
@@ -75,6 +77,7 @@ export class LarkMessenger implements Messenger {
         replyInThread,
         messageId: result.messageId,
         threadId: result.threadId,
+        rootId: result.rootId,
         cardTitle: card.header.title.content,
         cardSubtitle: card.header.subtitle?.content,
       }),
@@ -111,9 +114,10 @@ export class LarkMessenger implements Messenger {
       },
     })
     assertSuccess('replyText', res)
-    const result = {
+    const result: ReplyResult = {
       messageId: res.data?.message_id ?? '',
       threadId: res.data?.thread_id ?? '',
+      rootId: res.data?.root_id ?? '',
     }
     this.logger.info(
       'Replied Lark text',
@@ -123,6 +127,7 @@ export class LarkMessenger implements Messenger {
         replyInThread,
         messageId: result.messageId,
         threadId: result.threadId,
+        rootId: result.rootId,
         text: previewText(text),
       }),
     )

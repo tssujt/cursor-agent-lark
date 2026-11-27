@@ -35,6 +35,7 @@ class FakeMessenger implements Messenger {
   readonly updatedCards = new Map<string, CardJSON>()
   readonly texts: string[] = []
   readonly storedMessages = new Map<string, string>()
+  replyRootIdOverride = ''
 
   private nextId(prefix: string): string {
     return `${prefix}_${++this.seq}`
@@ -60,6 +61,7 @@ class FakeMessenger implements Messenger {
     return {
       messageId,
       threadId: replyInThread ? `omt_${replyToMsgId}` : '',
+      rootId: this.replyRootIdOverride || replyToMsgId,
     }
   }
 
@@ -963,6 +965,169 @@ describe('TaskManager end-to-end (stateless multi-bot Lark)', () => {
       expect(JSON.stringify(backendMessenger.repliedCards.at(-1))).toContain('Start a Session')
     } finally {
       await manager.stop()
+    }
+  })
+
+  it('routes thread replies to follow-up by default regardless of requireMention (including quoted-reply threads)', async () => {
+    const {
+      cfg,
+      backendCursor,
+      frontendCursor,
+      backendMessenger,
+      frontendMessenger,
+      manager,
+      createRestartedManager,
+    } = createMultiBotEnv()
+    cfg.bots[0]!.requireMention = true
+    cfg.bots[1]!.requireMention = false
+    backendMessenger.storedMessages.set('om_alert_root', 'prod-k8s OOM alert on weather-api')
+    const restartedManager = createRestartedManager()
+
+    try {
+      // 1. requireMention=false: auto-opened thread -> unmentioned reply after run completes sends follow-up
+      await manager.handleMessage({
+        botId: 'frontend-bot',
+        eventId: 'evt-rm-false-create',
+        messageId: 'om_auto_1',
+        rootId: '',
+        parentId: '',
+        threadId: '',
+        chatId: 'oc_rm_group',
+        chatType: 'group',
+        senderId: 'ou_alice',
+        text: 'Investigate checkout latency',
+        mentioned: false,
+      })
+      expect(frontendCursor.createReqs).toHaveLength(1)
+      const autoAgentId = deriveAgentId('frontend-bot', 'om_auto_1')
+      expect(frontendCursor.createReqs[0]?.agentId).toBe(autoAgentId)
+      frontendCursor.finishRun('run-1', 'Initial check done.')
+      await waitUntil(() => frontendMessenger.updatedCards.size >= 1)
+
+      await manager.handleMessage({
+        botId: 'frontend-bot',
+        eventId: 'evt-rm-false-followup',
+        messageId: 'om_auto_reply_1',
+        rootId: 'om_auto_1',
+        parentId: 'om_auto_1',
+        threadId: 'omt_om_auto_1',
+        chatId: 'oc_rm_group',
+        chatType: 'group',
+        senderId: 'ou_alice',
+        text: 'name: checkout-api\nbranch: prod\n请再看下最近 30 分钟错误率',
+        mentioned: false,
+      })
+      expect(frontendCursor.createReqs).toHaveLength(1)
+      expect(frontendCursor.followUpReqs).toHaveLength(1)
+      expect(frontendCursor.followUpReqs[0]?.agentId).toBe(autoAgentId)
+      // Follow-up preserves key: value lines verbatim instead of stripping create headers
+      expect(frontendCursor.followUpReqs[0]?.prompt).toBe(
+        'name: checkout-api\nbranch: prod\n请再看下最近 30 分钟错误率',
+      )
+
+      // Bare @Bot inside an existing thread shows help instead of sending an empty follow-up
+      const feCardsBefore = frontendMessenger.repliedCards.length
+      await manager.handleMessage({
+        botId: 'frontend-bot',
+        eventId: 'evt-rm-false-bare-at',
+        messageId: 'om_auto_bare_at',
+        rootId: 'om_auto_1',
+        parentId: 'om_auto_1',
+        threadId: 'omt_om_auto_1',
+        chatId: 'oc_rm_group',
+        chatType: 'group',
+        senderId: 'ou_alice',
+        text: '@_user_1',
+        mentioned: true,
+      })
+      expect(frontendCursor.followUpReqs).toHaveLength(1)
+      expect(frontendCursor.steerReqs).toHaveLength(0)
+      expect(frontendMessenger.repliedCards).toHaveLength(feCardsBefore + 1)
+
+      // 2. requireMention=true: quoting an alert opens a new thread on the @Bot reply message (om_quote_at)
+      await manager.handleMessage({
+        botId: 'backend-bot',
+        eventId: 'evt-rm-true-quote',
+        messageId: 'om_quote_at',
+        rootId: 'om_alert_root',
+        parentId: 'om_alert_root',
+        threadId: '',
+        chatId: 'oc_rm_group',
+        chatType: 'group',
+        senderId: 'ou_alice',
+        text: '@_user_1',
+        mentioned: true,
+      })
+      expect(backendCursor.createReqs).toHaveLength(1)
+      const quotedThreadAgentId = deriveAgentId('backend-bot', 'om_quote_at')
+      expect(backendCursor.createReqs[0]?.agentId).toBe(quotedThreadAgentId)
+      expect(backendCursor.createReqs[0]?.metadata?.lark_root_msg_id).toBe('om_quote_at')
+      expect(backendCursor.createReqs[0]?.metadata?.lark_quoted_root_id).toBe('om_alert_root')
+      expect(backendMessenger.replyCardCalls[0]?.replyToMsgId).toBe('om_quote_at')
+      expect(backendMessenger.replyCardCalls[0]?.replyInThread).toBe(true)
+
+      backendCursor.finishRun('run-1', 'Checked weather-api OOM.')
+      await waitUntil(() => backendMessenger.updatedCards.size >= 1)
+
+      // Unmentioned reply inside the newly opened thread defaults to follow-up (even across restarts)
+      await restartedManager.handleMessage({
+        botId: 'backend-bot',
+        eventId: 'evt-rm-true-quote-followup',
+        messageId: 'om_quote_followup',
+        rootId: 'om_quote_at',
+        parentId: 'om_quote_at',
+        threadId: 'omt_om_quote_at',
+        chatId: 'oc_rm_group',
+        chatType: 'group',
+        senderId: 'ou_alice',
+        text: '再看看对应节点的内存监控',
+        mentioned: false,
+      })
+      expect(backendCursor.createReqs).toHaveLength(1)
+      expect(backendCursor.followUpReqs).toHaveLength(1)
+      expect(backendCursor.followUpReqs[0]?.agentId).toBe(quotedThreadAgentId)
+      expect(backendCursor.followUpReqs[0]?.prompt).toBe('再看看对应节点的内存监控')
+
+      // 3. Even if Lark returns a different root_id for the thread, threadId indexing still routes to follow-up
+      backendMessenger.replyRootIdOverride = 'om_alert_alt_root'
+      backendMessenger.storedMessages.set('om_alert_alt_root', 'Redis latency spike')
+      await manager.handleMessage({
+        botId: 'backend-bot',
+        eventId: 'evt-rm-true-alt-quote',
+        messageId: 'om_alt_at',
+        rootId: 'om_alert_alt_root',
+        parentId: 'om_alert_alt_root',
+        threadId: '',
+        chatId: 'oc_rm_group',
+        chatType: 'group',
+        senderId: 'ou_alice',
+        text: '@_user_1 查一下原因',
+        mentioned: true,
+      })
+      const altAgentId = deriveAgentId('backend-bot', 'om_alt_at')
+      backendCursor.finishRun('run-3', 'Initial Redis check finished.')
+      await waitUntil(() => backendMessenger.updatedCards.size >= 2)
+
+      await manager.handleMessage({
+        botId: 'backend-bot',
+        eventId: 'evt-rm-true-alt-followup',
+        messageId: 'om_alt_followup',
+        rootId: 'om_alert_alt_root',
+        parentId: 'om_alert_alt_root',
+        threadId: 'omt_om_alt_at',
+        chatId: 'oc_rm_group',
+        chatType: 'group',
+        senderId: 'ou_alice',
+        text: '顺便看下慢查询日志',
+        mentioned: false,
+      })
+      expect(backendCursor.createReqs).toHaveLength(2)
+      expect(backendCursor.followUpReqs).toHaveLength(2)
+      expect(backendCursor.followUpReqs[1]?.agentId).toBe(altAgentId)
+      expect(backendCursor.followUpReqs[1]?.prompt).toBe('顺便看下慢查询日志')
+    } finally {
+      await manager.stop()
+      await restartedManager.stop()
     }
   })
 
